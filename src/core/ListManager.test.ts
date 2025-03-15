@@ -1,103 +1,152 @@
-import { DataBaseSystem } from "../core/DataBaseSystem";
-import { BookDataBaseService, BookInfo } from "@externals/simple-db";
-import { HashGenerator } from "../utils/HashGenerator";
-import { TestBookInfo } from "../__test__/TestingData"; // 測試用 Book 資料
+import { ListViewerManager, UpdateType } from "./ListManager";
+import { DataBaseSystem } from "./DataBaseSystem";
+import { WordPuritySystem } from "./WordPuritySystem";
+import { FilterSystem } from "./FilterSystem";
+import { SortSystem } from "./SortSystem";
+import { DisplayRangeSystem } from "./DisplayRangeSystem";
+import { WordPurityService } from "@externals/word-purity";
+import { BookInfo } from "@externals/simple-db";
 
-jest.setTimeout(10000);
+// 模擬 DataBaseSystem
+jest.mock("./DataBaseSystem", () => {
+  return {
+    DataBaseSystem: jest.fn().mockImplementation(() => ({
+      connectDB: jest.fn().mockResolvedValue(undefined),
+      process: jest.fn().mockResolvedValue(undefined),
+      getItems: jest.fn().mockReturnValue([]),
+      getUpdateMessage: jest.fn().mockReturnValue("Data Updated"),
+    })),
+  };
+});
 
-describe("DataBaseSystem Full Coverage Tests", () => {
-  let mockDB: jest.Mocked<BookDataBaseService>;
-  let mockHashGenerator: jest.Mocked<HashGenerator>;
-  let databaseSystem: DataBaseSystem;
+// 模擬 WordPuritySystem
+jest.mock("./WordPuritySystem", () => {
+  return {
+    WordPuritySystem: jest.fn().mockImplementation(() => ({
+      process: jest.fn().mockResolvedValue(undefined),
+      getItems: jest.fn().mockReturnValue([]),
+      getUpdateMessage: jest.fn().mockReturnValue("WordPurity Updated"),
+    })),
+  };
+});
 
-  beforeEach(() => {
-    mockDB = {
-      setUp: jest.fn(),
-      getBooks: jest.fn(),
-      addBook: jest.fn(),
-      deleteBook: jest.fn(),
-    } as unknown as jest.Mocked<BookDataBaseService>;
+// 模擬 FilterSystem
+jest.mock("./FilterSystem", () => {
+  return {
+    FilterSystem: jest.fn().mockImplementation(() => ({
+      process: jest.fn().mockResolvedValue(undefined),
+      getItems: jest.fn().mockReturnValue([]),
+      getUpdateMessage: jest.fn().mockReturnValue("Filter Updated"),
+    })),
+  };
+});
 
-    mockHashGenerator = {
-      simpleISBN: jest.fn().mockReturnValue("123-45-67890-12-3"),
-    } as unknown as jest.Mocked<HashGenerator>;
+// 模擬 SortSystem
+jest.mock("./SortSystem", () => {
+  return {
+    SortSystem: jest.fn().mockImplementation(() => ({
+      process: jest.fn().mockResolvedValue(undefined),
+      getItems: jest.fn().mockReturnValue([]),
+      getUpdateMessage: jest.fn().mockReturnValue("Sort Updated"),
+    })),
+  };
+});
 
-    databaseSystem = new DataBaseSystem(mockDB, mockHashGenerator);
+// 模擬 DisplayRangeSystem
+jest.mock("./DisplayRangeSystem", () => {
+  return {
+    DisplayRangeSystem: jest.fn().mockImplementation(() => ({
+      process: jest.fn().mockResolvedValue(undefined),
+      getItems: jest.fn().mockReturnValue([
+        { ISBN: "12345", title: "Book A", author: "Author A" },
+        { ISBN: "67890", title: "Book B", author: "Author B" }
+      ]),
+      getUpdateMessage: jest.fn().mockReturnValue("Display Updated"),
+    })),
+  };
+});
 
-    jest.spyOn(databaseSystem as any, "retryDelay");
+// 模擬 WordPurityService（用於 WordPuritySystem 建構式中）
+jest.mock("@externals/word-purity", () => {
+  return {
+    WordPurityService: jest.fn().mockImplementation(() => ({
+      addWord: jest.fn(),
+      purity: jest.fn((text: string) => text.replace(/Copperfield|Wonderland/g, "***")),
+    })),
+  };
+});
+
+describe("ListViewerManager - Full Coverage", () => {
+  let manager: ListViewerManager;
+  let dbInstance: any;
+  let wpInstance: any;
+  let filterInstance: any;
+  let sortInstance: any;
+  let displayInstance: any;
+
+  beforeEach(async () => {
+    // 建立 ListViewerManager，setUp() 內部會 new 各個系統（皆為 Jest mock）
+    manager = new ListViewerManager();
+    await manager.setUp();
+
+    // 直接從 manager 的 processors 陣列取得各系統實例
+    dbInstance = manager["processors"][0];
+    wpInstance = manager["processors"][1];
+    filterInstance = manager["processors"][2];
+    sortInstance = manager["processors"][3];
+    displayInstance = manager["processors"][4];
   });
 
-  test("should connect to database and fetch books successfully", async () => {
-    mockDB.setUp.mockResolvedValue("Connected");
-    mockDB.getBooks.mockResolvedValue(TestBookInfo);
-
-    await expect(databaseSystem.connectDB()).resolves.toBe("Connected");
-
-    expect(mockDB.setUp).toHaveBeenCalledWith("http://localhost", 4000);
-    expect(mockDB.getBooks).toHaveBeenCalledTimes(1);
-    expect(databaseSystem.getItems()).toEqual(TestBookInfo);
+  test("should initialize all systems in correct order", async () => {
+    // 檢查 DataBaseSystem.connectDB 是否被呼叫
+    expect(dbInstance.connectDB).toHaveBeenCalled();
+    // 驗證 processors 陣列的順序是否正確
+    expect(manager["processors"]).toEqual([
+      dbInstance,
+      wpInstance,
+      filterInstance,
+      sortInstance,
+      displayInstance,
+    ]);
   });
 
-  test("should retry 5 times and throw error if connection fails", async () => {
-    mockDB.setUp.mockRejectedValue(new Error("Connection failed"));
+  test("should update correct systems starting from the given updateType", async () => {
+    // UpdateType.Filter 對應數值 2，所以將從 processors[2] (FilterSystem) 開始更新
+    await manager.updateResult(UpdateType.Filter);
 
-    await expect(databaseSystem.connectDB()).rejects.toThrow("Cannnot connect to DB");
+    expect(filterInstance.process).toHaveBeenCalled();
+    expect(sortInstance.process).toHaveBeenCalled();
+    expect(displayInstance.process).toHaveBeenCalled();
 
-    expect(mockDB.setUp).toHaveBeenCalledTimes(5);
-    expect((databaseSystem as any).retryDelay).toHaveBeenCalledTimes(5);
+    expect(manager.getUpdateMessage()).toEqual([
+      "Filter Updated",
+      "Sort Updated",
+      "Display Updated",
+    ]);
   });
 
-  test("should add book successfully when title and author are provided", async () => {
-    await databaseSystem.addBook("Test Title", "Test Author");
+  test("should update from Data updateType and process all systems", async () => {
+    // UpdateType.Data 為 0，所以會從 processors[0] 至 processors[4] 全部更新
+    await manager.updateResult(UpdateType.Data);
 
-    expect(mockHashGenerator.simpleISBN).toHaveBeenCalledWith("000-00-00000-00-0");
-    expect(mockDB.addBook).toHaveBeenCalledWith({
-      ISBN: "123-45-67890-12-3",
-      title: "Test Title",
-      author: "Test Author",
-    });
+    expect(dbInstance.process).toHaveBeenCalled();
+    expect(wpInstance.process).toHaveBeenCalled();
+    expect(filterInstance.process).toHaveBeenCalled();
+    expect(sortInstance.process).toHaveBeenCalled();
+    expect(displayInstance.process).toHaveBeenCalled();
   });
 
-  test("should throw error if title or author is missing", async () => {
-    await expect(databaseSystem.addBook("", "Test Author")).rejects.toThrow("Add book failed");
-    await expect(databaseSystem.addBook("Test Title", "")).rejects.toThrow("Add book failed");
-    expect(mockDB.addBook).not.toHaveBeenCalled();
+  test("should return correct processor when using getProcessor()", () => {
+    // 根據設計：processors[2] 為 FilterSystem, processors[3] 為 SortSystem
+    expect(manager.getProcessor(UpdateType.Filter)).toBe(filterInstance);
+    expect(manager.getProcessor(UpdateType.Sort)).toBe(sortInstance);
   });
 
-  test("should throw error if addBook fails in database", async () => {
-    mockDB.addBook.mockRejectedValue(new Error("DB error"));
-    await expect(databaseSystem.addBook("Test Title", "Test Author")).rejects.toThrow("Add book failed");
-  });
-
-  test("should delete book when valid ISBN is provided", async () => {
-    await databaseSystem.deleteBook("123-45-67890-12-3");
-
-    expect(mockDB.deleteBook).toHaveBeenCalledWith("123-45-67890-12-3");
-  });
-
-  test("should throw error if ISBN is missing", async () => {
-    await expect(databaseSystem.deleteBook("")).rejects.toThrow("Delete book failed");
-    expect(mockDB.deleteBook).not.toHaveBeenCalled();
-  });
-
-  test("should throw error if deleteBook fails in database", async () => {
-    mockDB.deleteBook.mockRejectedValue(new Error("DB error"));
-    await expect(databaseSystem.deleteBook("123-45-67890-12-3")).rejects.toThrow("Delete book failed");
-  });
-
-  test("should update items when process() is called", async () => {
-    mockDB.getBooks.mockResolvedValue(TestBookInfo);
-
-    await databaseSystem.process([]);
-
-    expect(mockDB.getBooks).toHaveBeenCalledTimes(1);
-    expect(databaseSystem.getItems()).toEqual(TestBookInfo);
-  });
-
-  test("should not throw error if getBooks fails in process()", async () => {
-    mockDB.getBooks.mockRejectedValue(new Error("DB error"));
-
-    await expect(databaseSystem.process([])).resolves.not.toThrow();
-    expect(mockDB.getBooks).toHaveBeenCalledTimes(1);
+  test("should return correct formatted book info for display", () => {
+    const displayItems = manager.generateDisplayItemRow();
+    expect(displayItems).toEqual([
+      { ISBN: "12345", title: "Book A", author: "Author A" },
+      { ISBN: "67890", title: "Book B", author: "Author B" },
+    ]);
   });
 });
